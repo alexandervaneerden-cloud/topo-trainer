@@ -41,7 +41,12 @@
     display:flex;align-items:center;gap:12px;flex:0 0 auto;
   }
   .topbar .title{font-size:22px;font-weight:800;flex:1;display:flex;align-items:center;gap:9px}
-  .topbar .title .globe{font-size:24px}
+  .topbar .title .globe{font-size:24px;cursor:pointer;display:inline-block;user-select:none}
+  .topbar .title .globe:active{transform:scale(1.3)}
+  .topbar .title .globe.spin{animation:spin360 .6s cubic-bezier(.3,1.4,.5,1)}
+  @keyframes spin360{to{transform:rotate(360deg)}}
+  .erain{position:fixed;top:-48px;z-index:170;pointer-events:none;will-change:transform;animation:efall linear forwards}
+  @keyframes efall{to{transform:translateY(112vh) rotate(400deg);opacity:.85}}
   .backbtn{
     width:42px;height:42px;border-radius:14px;background:var(--card);
     box-shadow:var(--shadow);font-size:20px;display:flex;align-items:center;justify-content:center;
@@ -425,6 +430,7 @@ function render(){
    ============================================================ */
 function renderHome(r,scr){
   $('#topTitle').innerHTML='<span class="globe">🌍</span> Topo Trainer';
+  const gl=$('#topTitle .globe'); if(gl) gl.onclick=()=>globeTap(gl);
   if(!state.sets.length){
     scr.innerHTML=`
       <div class="empty">
@@ -1219,6 +1225,49 @@ function beep(ok){
     else{o.frequency.setValueAtTime(300,t);o.frequency.setValueAtTime(200,t+.12);}
     g.gain.setValueAtTime(.12,t);g.gain.exponentialRampToValueAtTime(.001,t+.28);
     o.start(t);o.stop(t+.3);
+  }catch(e){}
+}
+
+/* ============================================================
+   VERSTOPT SPEELTJE — tik op de wereldbol, puur voor de lol
+   ============================================================ */
+let globeCombo=0, globeComboTimer=null;
+function globeTap(el){
+  globeCombo++;
+  clearTimeout(globeComboTimer);
+  globeComboTimer=setTimeout(()=>{globeCombo=0;},1600);
+  el.classList.remove('spin'); void el.offsetWidth; el.classList.add('spin');
+  funSound(globeCombo);
+  confettiBurst();
+  if(globeCombo%5===0){ emojiRain(); toast('🎉 FEEST! '+globeCombo+' keer op rij!'); }
+}
+function emojiRain(){
+  const pool=['🌍','🎉','⭐','🚀','🦄','🌈','🎈','😄','🏆','💥','🍕','🐳','🎸','👾','🍩','🐱'];
+  for(let i=0;i<26;i++){
+    const e=document.createElement('div');
+    e.className='erain';
+    e.textContent=pool[Math.floor(Math.random()*pool.length)];
+    e.style.left=Math.random()*100+'vw';
+    e.style.fontSize=(22+Math.random()*28)+'px';
+    e.style.animationDuration=(1.6+Math.random()*1.5)+'s';
+    e.style.animationDelay=(Math.random()*0.35)+'s';
+    document.body.appendChild(e);
+    setTimeout(()=>e.remove(),3600);
+  }
+}
+function funSound(combo){
+  try{
+    actx=actx||new (window.AudioContext||window.webkitAudioContext)();
+    if(actx.state==='suspended')actx.resume();
+    const o=actx.createOscillator(),g=actx.createGain();
+    o.connect(g);g.connect(actx.destination);
+    o.type='triangle';
+    const t=actx.currentTime;
+    const base=380+Math.min(combo,12)*55;
+    o.frequency.setValueAtTime(base,t);
+    o.frequency.exponentialRampToValueAtTime(base*2.3,t+.14);
+    g.gain.setValueAtTime(.16,t);g.gain.exponentialRampToValueAtTime(.001,t+.24);
+    o.start(t);o.stop(t+.26);
   }catch(e){}
 }
 
