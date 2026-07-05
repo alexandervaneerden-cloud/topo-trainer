@@ -234,6 +234,38 @@ const CATS = {
 };
 const CAT_COLOR_HEX = {plaats:'#3d8bff',provincie:'#8b5cf6',water:'#12a5c4',gebied:'#ff8a3d'};
 
+// Beloningen: verzamel-stickers, elke 3 foutloze oefeningen krijg je er een
+const REWARDS = [
+  {k:'medal',e:'🏅',n:'Gouden medaille'},
+  {k:'star',e:'🌟',n:'Superster'},
+  {k:'rocket',e:'🚀',n:'Raket'},
+  {k:'crown',e:'👑',n:'Kroon'},
+  {k:'trophy',e:'🏆',n:'Gouden beker'},
+  {k:'diamond',e:'💎',n:'Diamant'},
+  {k:'lion',e:'🦁',n:'Dappere leeuw'},
+  {k:'dragon',e:'🐉',n:'Draak'},
+  {k:'compass',e:'🧭',n:'Gouden kompas'},
+  {k:'map',e:'🗺️',n:'Meesterkaart'},
+  {k:'unicorn',e:'🦄',n:'Eenhoorn'},
+  {k:'rainbow',e:'🌈',n:'Regenboog'},
+];
+const PERFECT_GOAL = 3;      // foutloze oefeningen per beloning
+const PERFECT_MINQ = 5;      // minstens zoveel vragen telt als "oefening"
+
+// Code op de pin: provincies krijgen een letter (A,B,C…), de rest een cijfer
+function getCode(set,pin){
+  if(pin.code) return pin.code;
+  if(pin.id && pin.id.indexOf('def_')===0) return pin.id.slice(4); // standaard-set: exact van het blaadje
+  let n=0,l=0;
+  for(const p of (set.pins||[])){
+    let c;
+    if(p.category==='provincie'){ c=String.fromCharCode(65+l); l++; }
+    else { n++; c=String(n); }
+    if(p.id===pin.id) return c;
+  }
+  return '';
+}
+
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,8);
 
 /* ---------- IndexedDB mini-wrapper ---------- */
@@ -272,7 +304,7 @@ let state = null;
 let saveTimer = null;
 
 function blankState(){
-  return { schema:SCHEMA, sets:[], progress:{}, xp:0, createdAt:Date.now() };
+  return { schema:SCHEMA, sets:[], progress:{}, xp:0, perfects:0, rewards:[], bliksemBest:{}, createdAt:Date.now() };
 }
 async function loadState(){
   let s = await DB.get('state');
@@ -284,6 +316,9 @@ async function loadState(){
   state.schema = SCHEMA;
   if(!state.progress) state.progress = {};
   if(typeof state.xp!=='number') state.xp = 0;
+  if(typeof state.perfects!=='number') state.perfects = 0;
+  if(!Array.isArray(state.rewards)) state.rewards = [];
+  if(!state.bliksemBest) state.bliksemBest = {};
 }
 function save(){
   clearTimeout(saveTimer);
@@ -372,6 +407,7 @@ function back(){ if(nav.length>1){ nav.pop(); render(); } }
 
 function render(){
   const r = nav[nav.length-1] || {name:'home'};
+  if(r.name!=='practice') stopBliksemTimer();
   const scr = $('#screen');
   scr.classList.toggle('nopad', false);
   $('#backBtn').classList.toggle('hidden', nav.length<=1);
@@ -379,7 +415,7 @@ function render(){
   ({
     home:renderHome, editor:renderEditor, setDetail:renderSetDetail,
     setup:renderSetup, practice:renderPractice, results:renderResults,
-    about:renderAbout,
+    study:renderStudy, about:renderAbout,
   }[r.name]||renderHome)(r,scr);
   renderXp();
 }
@@ -402,7 +438,23 @@ function renderHome(r,scr){
     $('#imp').onclick=doImport;
     return;
   }
-  let html = `<div class="sectionlbl">Kies een kaart om te oefenen</div>`;
+  // Prijzenkast
+  const earned=state.rewards||[];
+  const rc={}; earned.forEach(k=>rc[k]=(rc[k]||0)+1);
+  const uniq=REWARDS.filter(x=>rc[x.k]);
+  const filled=(state.perfects||0)%PERFECT_GOAL;
+  const rest=PERFECT_GOAL-filled;
+  let html = `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b>🏆 Prijzenkast</b>
+        <span class="muted" style="font-size:13px">${earned.length} verdiend</span>
+      </div>
+      <div style="margin-top:10px;font-size:30px;min-height:40px;line-height:1.25">${uniq.length?uniq.map(x=>`${x.e}${rc[x.k]>1?`<span style="font-size:13px;color:var(--muted)">×${rc[x.k]}</span>`:''}`).join(' '):'<span class="muted" style="font-size:14px">Nog leeg — doe 3 oefeningen foutloos voor je eerste sticker!</span>'}</div>
+      <div class="bar" style="margin-top:10px"><i style="width:${filled/PERFECT_GOAL*100}%;background:linear-gradient(90deg,var(--yellow),var(--orange))"></i></div>
+      <p class="muted" style="margin:6px 0 0;font-size:12px">Nog ${rest} foutloze oefening${rest>1?'en':''} tot de volgende beloning</p>
+    </div>
+    <div class="sectionlbl">Kies een kaart om te oefenen</div>`;
   state.sets.forEach(s=>{
     const m=masteryOfSet(s); const st=starsFor(m);
     const stars=[0,1,2].map(i=>`<span class="${i<st?'':'off'}">★</span>`).join('');
@@ -460,18 +512,28 @@ function renderSetDetail(r,scr){
     </div>`;
   });
   const canPractice=(s.pins||[]).length>0;
+  const best=(state.bliksemBest||{})[s.id]||0;
   scr.innerHTML=`
     <div class="card center">
       ${s.image?`<img src="${s.image}" style="width:100%;border-radius:14px;margin-bottom:10px">`:''}
       <div class="scorepill">${Math.round(m*100)}% geleerd</div>
       <div style="margin-top:14px">${catHtml||'<p class="muted">Nog geen plekjes toegevoegd.</p>'}</div>
     </div>
-    ${canPractice?`<button class="btn orange" id="play">🎯 Oefenen starten</button>`:''}
+    ${canPractice?`<button class="btn orange" id="play">🎯 Oefenen starten</button>
+    <div class="btn-row" style="margin-top:12px">
+      <button class="btn blue sm" id="bliksem" style="width:100%">⚡ Bliksemronde</button>
+      <button class="btn ghost sm" id="study" style="width:100%">👁️ Bekijk kaart</button>
+    </div>
+    ${best?`<p class="muted center" style="margin:10px 0 0;font-size:13px">⚡ Bliksem-record: <b>${best}</b> goed in 60 sec</p>`:''}`:''}
     <button class="btn ${canPractice?'ghost':'orange'}" id="edit" style="margin-top:12px">✏️ Kaart bewerken</button>
     <button class="btn ghost sm" id="reset" style="width:100%;margin-top:12px;color:var(--pink)">↺ Voortgang van deze kaart wissen</button>
     <button class="btn ghost sm" id="del" style="width:100%;margin-top:10px;color:var(--pink)">🗑️ Kaart verwijderen</button>
   `;
-  if(canPractice)$('#play').onclick=()=>go('setup',{setId:s.id});
+  if(canPractice){
+    $('#play').onclick=()=>go('setup',{setId:s.id});
+    $('#bliksem').onclick=()=>startBliksem(s);
+    $('#study').onclick=()=>go('study',{setId:s.id});
+  }
   $('#edit').onclick=()=>go('editor',{setId:s.id});
   $('#reset').onclick=()=>{
     if(confirm('Voortgang van deze kaart wissen? Punten blijven behouden.')){
@@ -485,6 +547,44 @@ function renderSetDetail(r,scr){
       save(); go('home',{},true); toast('Kaart verwijderd');
     }
   };
+}
+
+/* ============================================================
+   STUDY / BEKIJK KAART — alle plekjes met code, tik voor de naam
+   ============================================================ */
+let studyState={setId:null,revealAll:false,revealed:{}};
+function renderStudy(r,scr){
+  const s=state.sets.find(x=>x.id===r.setId);
+  if(!s){go('home',{},true);return;}
+  $('#topTitle').textContent='Bekijk kaart';
+  if(studyState.setId!==s.id){ studyState={setId:s.id,revealAll:false,revealed:{}}; }
+  drawStudy(s,scr);
+}
+function drawStudy(s,scr){
+  const pinsHtml=(s.pins||[]).map(p=>{
+    const show=studyState.revealAll||studyState.revealed[p.id];
+    return `<div class="pin small" data-pin="${p.id}" style="left:${p.x*100}%;top:${p.y*100}%;background:${CATS[p.category].color}">${getCode(s,p)}${show?`<span class="lbl">${esc(p.label)}</span>`:''}</div>`;
+  }).join('');
+  scr.innerHTML=`
+    <div class="hint" style="margin:2px 2px 10px">Tik op een plekje om de naam te zien. Provincies hebben een <b>letter</b>, de rest een cijfer.</div>
+    <div class="card" style="padding:8px">
+      <div class="mapwrap" id="smap">
+        <img src="${s.image}" alt="kaart">
+        ${pinsHtml}
+      </div>
+    </div>
+    <button class="btn ${studyState.revealAll?'ghost':'orange'}" id="toggle">${studyState.revealAll?'🙈 Verberg namen':'👀 Toon alle namen'}</button>
+    <button class="btn orange" id="play" style="margin-top:12px">🎯 Nu oefenen</button>
+  `;
+  const map=$('#smap');
+  map.onclick=e=>{
+    const el=e.target.closest('.pin'); if(!el)return;
+    const id=el.dataset.pin;
+    studyState.revealed[id]=!studyState.revealed[id];
+    drawStudy(s,scr);
+  };
+  $('#toggle').onclick=()=>{ studyState.revealAll=!studyState.revealAll; drawStudy(s,scr); };
+  $('#play').onclick=()=>go('setup',{setId:s.id});
 }
 
 /* ============================================================
@@ -510,7 +610,7 @@ function drawEditor(scr){
   const nextName = placing ? ed._queue[0].name : null;
   let pinsHtml = (ed.pins||[]).map((p,i)=>`
     <div class="pinrow">
-      <span class="num" style="background:${CATS[p.category].color}">${i+1}</span>
+      <span class="num" style="background:${CATS[p.category].color}">${getCode(ed,p)}</span>
       <span class="nm">${esc(p.label)}</span>
       <span class="muted" style="font-size:12px">${CATS[p.category].icon}</span>
       <button class="del" data-del="${p.id}">✕</button>
@@ -534,7 +634,7 @@ function drawEditor(scr){
       <div class="card" style="padding:8px">
         <div class="mapwrap" id="map">
           <img src="${ed.image}" alt="kaart">
-          ${(ed.pins||[]).map((p,i)=>`<div class="pin" style="left:${p.x*100}%;top:${p.y*100}%;background:${CATS[p.category].color}">${i+1}<span class="lbl">${esc(p.label)}</span></div>`).join('')}
+          ${(ed.pins||[]).map((p,i)=>`<div class="pin" style="left:${p.x*100}%;top:${p.y*100}%;background:${CATS[p.category].color}">${getCode(ed,p)}<span class="lbl">${esc(p.label)}</span></div>`).join('')}
           ${placing?`<div class="target" id="ghost" style="display:none"><div class="ring"></div></div>`:''}
         </div>
         <div class="btn-row" style="margin-top:8px">
@@ -731,15 +831,39 @@ function startSession(set){
   go('practice',{setId:set.id});
 }
 
+/* ---------- Bliksemronde: 60 sec zoveel mogelijk goed ---------- */
+let bliksemTimer=null;
+function startBliksem(set){
+  const cats=[...new Set((set.pins||[]).map(p=>p.category))];
+  const pool=(set.pins||[]).filter(p=>cats.includes(p.category));
+  if(!pool.length)return;
+  sess={set,mode:'bliksem',cats,pool,queue:shuffle(pool),i:0,total:0,correct:0,wrong:0,streak:0,best:0,answered:false,results:[],dur:60,endsAt:Date.now()+60000};
+  go('practice',{setId:set.id});
+  startBliksemTimer();
+}
+function startBliksemTimer(){
+  stopBliksemTimer();
+  bliksemTimer=setInterval(()=>{
+    if(!sess||sess.mode!=='bliksem'||(nav[nav.length-1]||{}).name!=='practice'){ stopBliksemTimer(); return; }
+    const left=Math.max(0,Math.ceil((sess.endsAt-Date.now())/1000));
+    const el=document.getElementById('biltime'); if(el) el.textContent=left;
+    const bar=document.getElementById('bilbar'); if(bar) bar.style.width=(left/sess.dur*100)+'%';
+    if(Date.now()>=sess.endsAt){ stopBliksemTimer(); if(sess) go('results',{setId:sess.set.id},true); }
+  },200);
+}
+function stopBliksemTimer(){ if(bliksemTimer){ clearInterval(bliksemTimer); bliksemTimer=null; } }
+
 function renderPractice(r,scr){
   if(!sess){go('home',{},true);return;}
-  if(sess.i>=sess.total){ go('results',{setId:sess.set.id},true); return; }
+  const bliksem = sess.mode==='bliksem';
+  if(!bliksem && sess.i>=sess.total){ go('results',{setId:sess.set.id},true); return; }
+  if(bliksem && sess.i>=sess.queue.length){ sess.queue=shuffle(sess.pool); sess.i=0; }
   const pin=sess.queue[sess.i];
+  const effMode = bliksem ? 'mc' : sess.mode;
   $('#topTitle').textContent=sess.set.name;
-  const pct=Math.round(sess.i/sess.total*100);
   // build choices for MC
   let choicesHtml='';
-  if(sess.mode==='mc'){
+  if(effMode==='mc'){
     let others=sess.set.pins.filter(p=>p.id!==pin.id&&p.category===pin.category).map(p=>p.label);
     if(others.length<3) others=others.concat(sess.set.pins.filter(p=>p.id!==pin.id&&p.category!==pin.category).map(p=>p.label));
     others=[...new Set(others)].filter(l=>norm(l)!==norm(pin.label));
@@ -753,12 +877,21 @@ function renderPractice(r,scr){
       </div>`;
   }
 
+  const left = bliksem ? Math.max(0,Math.ceil((sess.endsAt-Date.now())/1000)) : 0;
+  const header = bliksem
+    ? `<div class="qhead">
+        <span class="qcount">⚡ <span id="biltime">${left}</span>s</span>
+        <div class="qprog"><i id="bilbar" style="width:${left/sess.dur*100}%"></i></div>
+        <span class="streakchip">✅ ${sess.correct}</span>
+      </div>`
+    : `<div class="qhead">
+        <span class="qcount">${sess.i+1}/${sess.total}</span>
+        <div class="qprog"><i style="width:${Math.round(sess.i/sess.total*100)}%"></i></div>
+        <span class="streakchip">${sess.streak>1?'🔥'+sess.streak:''}</span>
+      </div>`;
+
   scr.innerHTML=`
-    <div class="qhead">
-      <span class="qcount">${sess.i+1}/${sess.total}</span>
-      <div class="qprog"><i style="width:${pct}%"></i></div>
-      <span class="streakchip">${sess.streak>1?'🔥'+sess.streak:''}</span>
-    </div>
+    ${header}
     <div class="card" style="padding:8px">
       <div class="mapwrap" id="pmap">
         <img src="${sess.set.image}" alt="kaart">
@@ -774,7 +907,7 @@ function renderPractice(r,scr){
   `;
 
   sess.answered=false;
-  if(sess.mode==='mc'){
+  if(effMode==='mc'){
     $$('#choices .choice',scr).forEach(b=>b.onclick=()=>answerMC(b,pin));
   }else{
     const inp=$('#typeIn');
@@ -808,10 +941,11 @@ function answerType(val,pin){
 }
 
 function finishAnswer(ok,pin,near){
+  const bliksem = sess.mode==='bliksem';
   const g=prog(pin.id);
   g.seen++;
   if(ok){g.correct++;g.box=Math.min(5,g.box+1);g.streak++;sess.correct++;sess.streak++;sess.best=Math.max(sess.best,sess.streak);}
-  else{g.wrong++;g.box=Math.max(0,g.box-1);g.streak=0;sess.streak=0;}
+  else{g.wrong++;g.box=Math.max(0,g.box-1);g.streak=0;sess.streak=0;sess.wrong=(sess.wrong||0)+1;}
   sess.results.push({pin,ok});
   const fb=$('#fb');
   if(ok){
@@ -819,18 +953,22 @@ function finishAnswer(ok,pin,near){
     fb.className='feedback good';
     fb.textContent = sess.streak>=3 ? `${sess.streak} op rij! 🔥` : msgs[Math.floor(Math.random()*msgs.length)];
     beep(true);
-    if(sess.streak===3||sess.streak===5||sess.streak%10===0&&sess.streak>0) confettiBurst();
+    if(!bliksem && (sess.streak===3||sess.streak===5||sess.streak%10===0&&sess.streak>0)) confettiBurst();
     addXp(sess.streak>=3?15:10);
   }else{
     fb.className='feedback bad';
     fb.innerHTML = near ? `Bijna! Let op de spelling: <span class="ans">${esc(pin.label)}</span>` : `Het juiste antwoord is <span class="ans">${esc(pin.label)}</span>`;
     beep(false);
   }
-  const nb=$('#next'); nb.classList.remove('hidden');
   save();
-  // auto-advance sneller bij goed
   clearTimeout(sess._adv);
-  sess._adv=setTimeout(()=>{ if(sess.answered&&sess.i<sess.total) nextQ(); }, ok?900:2200);
+  if(bliksem){
+    // snel door, geen knop; als de tijd om is regelt de timer het einde
+    sess._adv=setTimeout(()=>{ if(sess&&sess.answered&&Date.now()<sess.endsAt&&(nav[nav.length-1]||{}).name==='practice') nextQ(); }, ok?300:650);
+  }else{
+    $('#next').classList.remove('hidden');
+    sess._adv=setTimeout(()=>{ if(sess.answered&&sess.i<sess.total) nextQ(); }, ok?900:2200);
+  }
 }
 function nextQ(){ clearTimeout(sess._adv); sess.i++; render(); }
 
@@ -839,14 +977,38 @@ function nextQ(){ clearTimeout(sess._adv); sess.i++; render(); }
    ============================================================ */
 function renderResults(r,scr){
   if(!sess){go('home',{},true);return;}
+  const setId=sess.set.id;
+  const setObj=sess.set;
+  if(sess.mode==='bliksem'){ renderBliksemResults(scr,setId,setObj); return; }
+
   $('#topTitle').textContent='Klaar!';
   const pctScore=sess.total?Math.round(sess.correct/sess.total*100):0;
+  const perfect = pctScore===100 && sess.total>=1;
+
+  // Beloning: elke 3 foutloze oefeningen (min. PERFECT_MINQ vragen)
+  let reward=null, counts=false;
+  if(!sess._counted){
+    sess._counted=true;
+    if(pctScore===100 && sess.total>=PERFECT_MINQ){
+      counts=true;
+      state.perfects=(state.perfects||0)+1;
+      if(state.perfects % PERFECT_GOAL === 0) reward=grantReward();
+      save();
+    }
+  }
+  const toNext = counts ? (PERFECT_GOAL - (state.perfects % PERFECT_GOAL || PERFECT_GOAL)) : 0;
+
   let emoji='💪',title='Goed geoefend!';
   if(pctScore===100){emoji='🏆';title='Foutloos!';}
   else if(pctScore>=80){emoji='🌟';title='Heel knap!';}
   else if(pctScore>=50){emoji='👍';title='Lekker bezig!';}
   else{emoji='🚀';title='Blijf oefenen!';}
   const wrong=sess.results.filter(x=>!x.ok);
+
+  // voortgangsbolletjes richting volgende beloning
+  const filled = state.perfects % PERFECT_GOAL;
+  const dots = Array.from({length:PERFECT_GOAL},(_,i)=>`<span style="font-size:20px">${i < (reward?PERFECT_GOAL:filled) ? '🟢':'⚪'}</span>`).join(' ');
+
   scr.innerHTML=`
     <div class="card center">
       <div class="result-big">${emoji}</div>
@@ -854,6 +1016,11 @@ function renderResults(r,scr){
       <div class="scorepill">${sess.correct} / ${sess.total} goed</div>
       <p class="muted" style="margin-top:12px">Beste reeks: 🔥 ${sess.best} · +${sess.total?sess.correct*10:0} punten verdiend</p>
     </div>
+    ${perfect?`<div class="card center">
+      <div style="font-size:13px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Foutloze oefeningen</div>
+      <div style="margin-top:8px">${dots}</div>
+      <p class="muted" style="margin:8px 0 0;font-size:13px">${reward?'Beloning verdiend! 🎁':(toNext>0?`Nog ${toNext} foutloze oefening${toNext>1?'en':''} tot je volgende beloning!`:'')}</p>
+    </div>`:''}
     ${wrong.length?`<div class="card">
       <b>Nog even oefenen:</b>
       <div style="margin-top:8px">${[...new Set(wrong.map(w=>w.pin.label))].map(l=>`<span class="pill">${esc(l)}</span>`).join('')}</div>
@@ -862,9 +1029,55 @@ function renderResults(r,scr){
     <button class="btn ghost" id="home" style="margin-top:12px">🏠 Terug naar overzicht</button>
   `;
   if(pctScore>=80)confettiBurst();
-  const setId=sess.set.id;
-  $('#again').onclick=()=>{ const s=state.sets.find(x=>x.id===setId); if(s)startSession(s); };
+  $('#again').onclick=()=>{ const s=state.sets.find(x=>x.id===setId); if(s){ sessionOpts=sessionOpts||{}; startSession(s); } };
   $('#home').onclick=()=>{ nav=[{name:'home'}]; render(); };
+  if(reward) setTimeout(()=>showReward(reward),700);
+}
+
+function renderBliksemResults(scr,setId,setObj){
+  $('#topTitle').textContent='⚡ Bliksemronde';
+  const score=sess.correct;
+  let record=false;
+  if(!sess._counted){
+    sess._counted=true;
+    const prev=(state.bliksemBest[setId]||0);
+    if(score>prev){ state.bliksemBest[setId]=score; record=true; }
+    save();
+  }
+  const best=state.bliksemBest[setId]||score;
+  scr.innerHTML=`
+    <div class="card center">
+      <div class="result-big">⚡</div>
+      <h2>${record?'Nieuw record! 🎉':'Tijd is om!'}</h2>
+      <div class="scorepill">${score} goed in 60 sec</div>
+      <p class="muted" style="margin-top:12px">Record voor deze kaart: <b>${best}</b> · +${score*10} punten</p>
+    </div>
+    <button class="btn blue" id="again">⚡ Nog een bliksemronde</button>
+    <button class="btn ghost" id="home" style="margin-top:12px">🏠 Terug naar overzicht</button>
+  `;
+  if(record)confettiBurst();
+  $('#again').onclick=()=>{ const s=state.sets.find(x=>x.id===setId); if(s)startBliksem(s); };
+  $('#home').onclick=()=>{ nav=[{name:'home'}]; render(); };
+}
+
+function grantReward(){
+  const earned=state.rewards||[];
+  let next=REWARDS.find(x=>!earned.includes(x.k));
+  if(!next) next=REWARDS[Math.floor(Math.random()*REWARDS.length)];
+  state.rewards.push(next.k);
+  return next;
+}
+function showReward(rw){
+  showOverlay(`
+    <div style="font-size:22px;font-weight:800;color:var(--orange-d)">🎁 Beloning verdiend!</div>
+    <div style="font-size:72px;margin:10px 0;animation:bob 1s infinite">${rw.e}</div>
+    <h2 style="margin:0">${rw.n}</h2>
+    <p class="muted" style="margin:8px 0 18px">Je deed ${PERFECT_GOAL} oefeningen foutloos! Dit staat nu in je prijzenkast.</p>
+    <button class="btn orange" id="rwOk">Gaaf! 🎉</button>
+  `);
+  $('#rwOk').onclick=closeOverlay;
+  confettiBurst();
+  setTimeout(confettiBurst,400);
 }
 
 /* ============================================================
